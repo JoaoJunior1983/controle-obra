@@ -161,18 +161,30 @@ export default function NovaDespesaPage() {
       // REGRA CRÍTICA: Se tem professionalId, categoria DEVE ser "mao_obra"
       const categoryFinal = formData.professionalId ? "mao_obra" : formData.category
 
-      // Criar objeto da despesa com campo padronizado
+      // Buscar nome do profissional se houver
+      let descricaoFinal = formData.descricao
+      if (formData.professionalId && !descricaoFinal) {
+        const profissional = profissionais.find(p => p.id === formData.professionalId)
+        if (profissional) {
+          descricaoFinal = `Pagamento - ${profissional.nome}`
+        }
+      }
+
+      // Criar objeto da despesa com campos padronizados para sincronização
       const despesa = {
         id: Date.now().toString(),
         obraId: obraId,
         data: formData.data,
         category: categoryFinal,
-        descricao: formData.descricao,
+        categoria: categoryFinal, // Duplicar para compatibilidade
+        descricao: descricaoFinal,
         valor: parseFloat(formData.valor),
         formaPagamento: formData.formaPagamento,
         fornecedor: formData.fornecedor || undefined,
         professionalId: formData.professionalId || undefined, // Campo padronizado
-        observacoes: formData.observacoes || undefined
+        profissionalId: formData.professionalId || undefined, // Duplicar para compatibilidade
+        observacoes: formData.observacoes || undefined,
+        observacao: formData.observacoes || undefined // Duplicar para compatibilidade com pagamentos
       }
 
       console.log("Salvando despesa:", despesa)
@@ -184,27 +196,11 @@ export default function NovaDespesaPage() {
 
       console.log("Total de despesas após salvar:", despesasExistentes.length)
 
-      // Se houver profissional vinculado, registrar no histórico do profissional
+      // Se houver profissional vinculado, disparar evento para atualizar lista de profissionais
       if (formData.professionalId) {
-        const todosProfissionais = JSON.parse(localStorage.getItem("profissionais") || "[]")
-        const indexProfissional = todosProfissionais.findIndex((p: Profissional) => p.id === formData.professionalId)
-        
-        if (indexProfissional !== -1) {
-          // Adicionar despesa ao histórico do profissional
-          if (!todosProfissionais[indexProfissional].despesas) {
-            todosProfissionais[indexProfissional].despesas = []
-          }
-          
-          todosProfissionais[indexProfissional].despesas.push({
-            id: despesa.id,
-            data: despesa.data,
-            descricao: despesa.descricao,
-            valor: despesa.valor,
-            category: despesa.category
-          })
-
-          localStorage.setItem("profissionais", JSON.stringify(todosProfissionais))
-        }
+        window.dispatchEvent(new CustomEvent("pagamentoSalvo", { 
+          detail: { profissionalId: formData.professionalId } 
+        }))
       }
 
       // Mostrar mensagem de sucesso

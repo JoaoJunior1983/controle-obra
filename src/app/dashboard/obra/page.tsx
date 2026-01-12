@@ -7,6 +7,14 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import Image from "next/image"
+import { NotificationBell } from "@/components/custom/NotificationBell"
+import { NotificationPanel } from "@/components/custom/NotificationPanel"
+import { 
+  verificarTodosAlertas, 
+  getAlertaOrcamentoByObra,
+  getAlertasPrazoByObra,
+  getAlertasPagamentoByObra
+} from "@/lib/alerts"
 
 interface Obra {
   id: string
@@ -28,8 +36,12 @@ interface Despesa {
   id: string
   obraId: string
   valor: number
+  data: string
   tipo?: string
-  category?: string // Novo campo
+  category?: string
+  categoria?: string
+  profissionalId?: string
+  descricao?: string
 }
 
 interface Profissional {
@@ -37,8 +49,10 @@ interface Profissional {
   obraId: string
   nome: string
   funcao: string
+  valorPrevisto?: number
   contrato?: {
-    valorTotalPrevisto: number
+    valorPrevisto?: number
+    valorTotalPrevisto?: number
   }
 }
 
@@ -49,47 +63,79 @@ export default function DashboardObraPage() {
   const [profissionais, setProfissionais] = useState<Profissional[]>([])
   const [loading, setLoading] = useState(true)
   const [detalhamentoAtivo, setDetalhamentoAtivo] = useState<"material" | "mao_obra" | null>(null)
+  const [notificationPanelOpen, setNotificationPanelOpen] = useState(false)
+  
+  // Status dos alertas
+  const [alertaOrcamentoAtivo, setAlertaOrcamentoAtivo] = useState(false)
+  const [alertasPrazoCount, setAlertasPrazoCount] = useState(0)
+  const [alertasPagamentoCount, setAlertasPagamentoCount] = useState(0)
 
   useEffect(() => {
-    // Verificar autenticação
     const isAuthenticated = localStorage.getItem("isAuthenticated")
     if (!isAuthenticated) {
       router.push("/")
       return
     }
 
-    // Carregar obra mais recente do usuário
     const userData = localStorage.getItem("user")
     if (!userData) {
       router.push("/")
       return
     }
 
+    // USAR activeObraId em vez de "obra mais recente"
+    const activeObraId = localStorage.getItem("activeObraId")
+    
+    if (!activeObraId) {
+      // Se não tem obra ativa, redirecionar para seleção de obras
+      router.push("/obras")
+      return
+    }
+
     const user = JSON.parse(userData)
     const obrasExistentes = JSON.parse(localStorage.getItem("obras") || "[]")
     
-    // Pegar a obra mais recente do usuário
-    const obrasDoUsuario = obrasExistentes.filter((o: Obra) => o.userId === user.email)
-    if (obrasDoUsuario.length > 0) {
-      const obraMaisRecente = obrasDoUsuario[obrasDoUsuario.length - 1]
-      setObra(obraMaisRecente)
+    // Buscar a obra ativa específica
+    const obraAtiva = obrasExistentes.find((o: Obra) => o.id === activeObraId && o.userId === user.email)
+    
+    if (obraAtiva) {
+      setObra(obraAtiva)
 
-      // Carregar despesas da obra
       const todasDespesas = JSON.parse(localStorage.getItem("despesas") || "[]")
-      const despesasObra = todasDespesas.filter((d: Despesa) => d.obraId === obraMaisRecente.id)
+      const despesasObra = todasDespesas.filter((d: Despesa) => d.obraId === obraAtiva.id)
       setDespesas(despesasObra)
 
-      // Carregar profissionais da obra
       const todosProfissionais = JSON.parse(localStorage.getItem("profissionais") || "[]")
-      const profissionaisObra = todosProfissionais.filter((p: Profissional) => p.obraId === obraMaisRecente.id)
+      const profissionaisObra = todosProfissionais.filter((p: Profissional) => p.obraId === obraAtiva.id)
       setProfissionais(profissionaisObra)
+
+      // Calcular total gasto
+      const totalGasto = despesasObra.reduce((acc: number, d: Despesa) => acc + (d.valor ?? 0), 0)
+
+      // Verificar alertas automaticamente
+      verificarTodosAlertas(obraAtiva.id, obraAtiva.orcamento || 0, totalGasto)
+
+      // Carregar status dos alertas
+      loadAlertasStatus(obraAtiva.id)
     } else {
-      // Se não tem obra, redireciona para criar
-      router.push("/dashboard/criar-obra")
+      // Obra ativa não encontrada, redirecionar para seleção
+      router.push("/obras")
+      return
     }
 
     setLoading(false)
   }, [router])
+
+  const loadAlertasStatus = (obraId: string) => {
+    const alertaOrc = getAlertaOrcamentoByObra(obraId)
+    setAlertaOrcamentoAtivo(alertaOrc?.ativo || false)
+
+    const alertasPrazo = getAlertasPrazoByObra(obraId)
+    setAlertasPrazoCount(alertasPrazo.length)
+
+    const alertasPagamento = getAlertasPagamentoByObra(obraId)
+    setAlertasPagamentoCount(alertasPagamento.length)
+  }
 
   const formatarMoeda = (valor: number): string => {
     return valor.toLocaleString("pt-BR", {
@@ -122,8 +168,9 @@ export default function DashboardObraPage() {
     }
   }
 
+  // FONTE ÚNICA DE VERDADE: DESPESAS
   const calcularTotalGasto = (): number => {
-    return despesas.reduce((acc, d) => acc + d.valor, 0)
+    return despesas.reduce((acc, d) => acc + (d.valor ?? 0), 0)
   }
 
   const calcularSaldoDisponivel = (): number => {
@@ -146,62 +193,109 @@ export default function DashboardObraPage() {
 
   const calcularMaoObraPrevista = (): number => {
     return profissionais.reduce((acc, p) => {
-      return acc + (p.contrato?.valorTotalPrevisto || 0)
+      const valorPrevisto = p.valorPrevisto || p.contrato?.valorPrevisto || p.contrato?.valorTotalPrevisto || 0
+      return acc + valorPrevisto
     }, 0)
   }
 
+  // REGRA: Mão de Obra = despesas com categoria "mao_obra"/"Mão de Obra" OU profissionalId preenchido
   const calcularMaoObraRealizada = (): number => {
     return despesas
-      .filter(d => d.category === "mao_obra")
-      .reduce((acc, d) => acc + d.valor, 0)
+      .filter(d => {
+        const category = String(d.category ?? d.categoria ?? d.tipo ?? "").toLowerCase()
+        const isMaoObra = category === "mao_obra" || category === "mão de obra"
+        const temProfissional = !!d.profissionalId
+        return isMaoObra || temProfissional
+      })
+      .reduce((acc, d) => acc + (d.valor ?? 0), 0)
   }
 
   const calcularDistribuicao = () => {
     const totalGasto = calcularTotalGasto()
-    if (totalGasto === 0) {
+    const orcamentoTotal = obra?.orcamento || 0
+    
+    if (totalGasto === 0 && orcamentoTotal === 0) {
       return { 
         material: 0, 
         maoObra: 0, 
         outros: 0,
         percMaterial: 0, 
         percMaoObra: 0,
-        percOutros: 0
+        percOutros: 0,
+        materialOutros: 0,
+        percMaterialOutros: 0
       }
     }
 
-    const material = despesas
-      .filter(d => d.category === "material")
-      .reduce((acc, d) => acc + d.valor, 0)
-    
+    // Mão de Obra: categoria "mao_obra"/"Mão de Obra" OU profissionalId preenchido
     const maoObra = despesas
-      .filter(d => d.category === "mao_obra")
-      .reduce((acc, d) => acc + d.valor, 0)
+      .filter(d => {
+        const category = String(d.category ?? d.categoria ?? d.tipo ?? "").toLowerCase()
+        const isMaoObra = category === "mao_obra" || category === "mão de obra"
+        const temProfissional = !!d.profissionalId
+        return isMaoObra || temProfissional
+      })
+      .reduce((acc, d) => acc + (d.valor ?? 0), 0)
 
+    // Material: categoria explícita "material"
+    const material = despesas
+      .filter(d => {
+        const category = String(d.category ?? d.categoria ?? d.tipo ?? "").toLowerCase()
+        const isMaoObra = category === "mao_obra" || category === "mão de obra"
+        const temProfissional = !!d.profissionalId
+        const isMaterial = category === "material"
+        return isMaterial && !isMaoObra && !temProfissional
+      })
+      .reduce((acc, d) => acc + (d.valor ?? 0), 0)
+
+    // Outros: tudo que não é Mão de Obra nem Material
     const outros = despesas
-      .filter(d => d.category === "outros" || !d.category)
-      .reduce((acc, d) => acc + d.valor, 0)
+      .filter(d => {
+        const category = String(d.category ?? d.categoria ?? d.tipo ?? "").toLowerCase()
+        const isMaoObra = category === "mao_obra" || category === "mão de obra"
+        const temProfissional = !!d.profissionalId
+        const isMaterial = category === "material"
+        return !isMaoObra && !temProfissional && !isMaterial
+      })
+      .reduce((acc, d) => acc + (d.valor ?? 0), 0)
 
-    // Material + Outros combinados
     const materialOutros = material + outros
-    const percMaterialOutros = (materialOutros / totalGasto) * 100
+    
+    const baseCalculo = orcamentoTotal > 0 ? orcamentoTotal : totalGasto
+    
+    const percMaterial = baseCalculo > 0 ? (material / baseCalculo) * 100 : 0
+    const percMaoObra = baseCalculo > 0 ? (maoObra / baseCalculo) * 100 : 0
+    const percOutros = baseCalculo > 0 ? (outros / baseCalculo) * 100 : 0
+    const percMaterialOutros = baseCalculo > 0 ? (materialOutros / baseCalculo) * 100 : 0
 
     return {
       material,
       maoObra,
       outros,
       materialOutros,
-      percMaterial: (material / totalGasto) * 100,
-      percMaoObra: (maoObra / totalGasto) * 100,
-      percOutros: (outros / totalGasto) * 100,
+      percMaterial,
+      percMaoObra,
+      percOutros,
       percMaterialOutros
     }
   }
 
   const getDespesasPorCategoria = (categoria: "material" | "mao_obra") => {
     if (categoria === "material") {
-      return despesas.filter(d => d.category === "material" || d.category === "outros" || !d.category)
+      return despesas.filter(d => {
+        const category = String(d.category ?? d.categoria ?? d.tipo ?? "").toLowerCase()
+        const isMaoObra = category === "mao_obra" || category === "mão de obra"
+        const temProfissional = !!d.profissionalId
+        return !isMaoObra && !temProfissional
+      })
     }
-    return despesas.filter(d => d.category === "mao_obra")
+    // Mão de Obra: categoria "mao_obra"/"Mão de Obra" OU profissionalId preenchido
+    return despesas.filter(d => {
+      const category = String(d.category ?? d.categoria ?? d.tipo ?? "").toLowerCase()
+      const isMaoObra = category === "mao_obra" || category === "mão de obra"
+      const temProfissional = !!d.profissionalId
+      return isMaoObra || temProfissional
+    })
   }
 
   if (loading) {
@@ -226,15 +320,13 @@ export default function DashboardObraPage() {
   const maoObraPrevista = calcularMaoObraPrevista()
   const maoObraRealizada = calcularMaoObraRealizada()
 
-  // Verificar se existem datas de prazo
   const temPrazo = obra.dataInicio || obra.dataTermino
   const prazoInfo = obra.dataTermino ? calcularDiasRestantes(obra.dataTermino) : null
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-slate-50 to-gray-50 p-4 sm:p-8">
       <div className="max-w-7xl mx-auto">
-        {/* Logo OBREASY no topo */}
-        <div className="mb-6">
+        <div className="mb-6 flex items-center justify-between">
           <Image
             src="https://k6hrqrxuu8obbfwn.public.blob.vercel-storage.com/temp/979b9040-0d37-4e0d-ae77-88fcfe603d77.png"
             alt="Logo OBREASY"
@@ -243,17 +335,22 @@ export default function DashboardObraPage() {
             className="h-12 w-auto"
             priority
           />
+          
+          {/* Sino de notificações */}
+          <NotificationBell 
+            obraId={obra.id} 
+            onClick={() => setNotificationPanelOpen(true)}
+          />
         </div>
 
-        {/* Header */}
         <div className="mb-8">
           <Button
             variant="ghost"
-            onClick={() => router.push("/dashboard")}
+            onClick={() => router.push("/obras")}
             className="mb-4 hover:bg-blue-50 text-gray-700"
           >
             <ArrowLeft className="w-4 h-4 mr-2" />
-            Voltar ao Dashboard
+            Voltar para Minhas Obras
           </Button>
 
           <div className="flex items-center gap-3 mb-2">
@@ -271,9 +368,7 @@ export default function DashboardObraPage() {
           </div>
         </div>
 
-        {/* Cards Principais */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-          {/* Orçamento Estimado */}
           <Card className="p-6 bg-white shadow-lg hover:shadow-xl transition-shadow">
             <div className="flex items-center justify-between mb-3">
               <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
@@ -286,7 +381,6 @@ export default function DashboardObraPage() {
             </p>
           </Card>
 
-          {/* Total Gasto */}
           <Card className="p-6 bg-white shadow-lg hover:shadow-xl transition-shadow">
             <div className="flex items-center justify-between mb-3">
               <div className="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center">
@@ -300,7 +394,6 @@ export default function DashboardObraPage() {
             )}
           </Card>
 
-          {/* Saldo Disponível */}
           <Card className="p-6 bg-white shadow-lg hover:shadow-xl transition-shadow">
             <div className="flex items-center justify-between mb-3">
               <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
@@ -313,7 +406,6 @@ export default function DashboardObraPage() {
             </p>
           </Card>
 
-          {/* Custo por m² */}
           <Card className="p-6 bg-white shadow-lg hover:shadow-xl transition-shadow">
             <div className="flex items-center justify-between mb-3">
               <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
@@ -326,7 +418,6 @@ export default function DashboardObraPage() {
           </Card>
         </div>
 
-        {/* Card Prazo da Obra - NOVO (somente se existirem datas) */}
         {temPrazo && (
           <Card className="p-6 bg-white shadow-lg hover:shadow-xl transition-shadow mb-8">
             <div className="flex items-center gap-3 mb-4">
@@ -337,7 +428,6 @@ export default function DashboardObraPage() {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-              {/* Data de Início */}
               {obra.dataInicio && (
                 <div>
                   <p className="text-sm text-gray-600 font-medium mb-1">Data de Início</p>
@@ -345,7 +435,6 @@ export default function DashboardObraPage() {
                 </div>
               )}
 
-              {/* Data Prevista de Término */}
               {obra.dataTermino && (
                 <div>
                   <p className="text-sm text-gray-600 font-medium mb-1">Previsão de Término</p>
@@ -354,7 +443,6 @@ export default function DashboardObraPage() {
               )}
             </div>
 
-            {/* Cálculo de dias restantes/atraso */}
             {prazoInfo && (
               <div className="mt-6 pt-6 border-t border-gray-200">
                 <div className={`flex items-center gap-3 p-4 rounded-lg ${
@@ -383,9 +471,7 @@ export default function DashboardObraPage() {
           </Card>
         )}
 
-        {/* Cards de Acesso Rápido - Despesas e Profissionais */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
-          {/* Card Despesas */}
           <Card className="p-6 bg-white shadow-lg hover:shadow-xl transition-shadow">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl flex items-center justify-center shadow-md">
@@ -416,7 +502,6 @@ export default function DashboardObraPage() {
             </div>
           </Card>
 
-          {/* Card Profissionais */}
           <Card className="p-6 bg-white shadow-lg hover:shadow-xl transition-shadow">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl flex items-center justify-center shadow-md">
@@ -448,13 +533,11 @@ export default function DashboardObraPage() {
           </Card>
         </div>
 
-        {/* Distribuição de Gastos - DOIS BLOCOS SIMULTÂNEOS */}
         {totalGasto > 0 && (
           <Card className="p-6 sm:p-8 bg-white shadow-lg mb-8">
             <h2 className="text-xl font-bold text-gray-900 mb-6">Distribuição de Gastos</h2>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* BLOCO 1: Material / Outros */}
               <div 
                 className="border-2 border-blue-200 rounded-xl p-6 hover:border-blue-400 transition-all cursor-pointer bg-blue-50/30"
                 onClick={() => setDetalhamentoAtivo(detalhamentoAtivo === "material" ? null : "material")}
@@ -462,16 +545,18 @@ export default function DashboardObraPage() {
                 <h3 className="text-lg font-bold text-gray-900 mb-4">Material / Outros</h3>
                 
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-gray-600">Total acumulado</span>
+                  <span className="text-sm font-medium text-gray-600">
+                    {obra.orcamento ? "% do orçamento" : "Total acumulado"}
+                  </span>
                   <span className="text-sm font-bold text-blue-600">
-                    {totalGasto > 0 ? distribuicao.percMaterialOutros.toFixed(1) : "0.0"}%
+                    {distribuicao.percMaterialOutros.toFixed(1)}%
                   </span>
                 </div>
                 
                 <div className="h-4 bg-gray-200 rounded-full overflow-hidden mb-3">
                   <div 
                     className="h-full bg-blue-600 rounded-full transition-all"
-                    style={{ width: `${distribuicao.percMaterialOutros}%` }}
+                    style={{ width: `${Math.min(distribuicao.percMaterialOutros, 100)}%` }}
                   />
                 </div>
                 
@@ -482,7 +567,6 @@ export default function DashboardObraPage() {
                 )}
               </div>
 
-              {/* BLOCO 2: Mão de Obra */}
               <div 
                 className="border-2 border-orange-200 rounded-xl p-6 hover:border-orange-400 transition-all cursor-pointer bg-orange-50/30"
                 onClick={() => setDetalhamentoAtivo(detalhamentoAtivo === "mao_obra" ? null : "mao_obra")}
@@ -490,16 +574,18 @@ export default function DashboardObraPage() {
                 <h3 className="text-lg font-bold text-gray-900 mb-4">Mão de Obra</h3>
                 
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-gray-600">Total acumulado</span>
+                  <span className="text-sm font-medium text-gray-600">
+                    {obra.orcamento ? "% do orçamento" : "Total acumulado"}
+                  </span>
                   <span className="text-sm font-bold text-orange-600">
-                    {totalGasto > 0 ? distribuicao.percMaoObra.toFixed(1) : "0.0"}%
+                    {distribuicao.percMaoObra.toFixed(1)}%
                   </span>
                 </div>
                 
                 <div className="h-4 bg-gray-200 rounded-full overflow-hidden mb-3">
                   <div 
                     className="h-full bg-orange-600 rounded-full transition-all"
-                    style={{ width: `${distribuicao.percMaoObra}%` }}
+                    style={{ width: `${Math.min(distribuicao.percMaoObra, 100)}%` }}
                   />
                 </div>
                 
@@ -517,7 +603,6 @@ export default function DashboardObraPage() {
               </div>
             </div>
 
-            {/* Detalhamento das despesas (quando clicado) */}
             {detalhamentoAtivo && (
               <div className="mt-6 pt-6 border-t border-gray-200">
                 <h4 className="text-md font-bold text-gray-900 mb-4">
@@ -546,16 +631,13 @@ export default function DashboardObraPage() {
           </Card>
         )}
 
-        {/* Estado Vazio - Despesas */}
         {despesas.length === 0 && (
           <Card className="p-8 sm:p-12 bg-white shadow-lg mb-8">
             <div className="text-center max-w-2xl mx-auto">
-              {/* Ícone decorativo */}
               <div className="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-br from-blue-100 to-blue-200 rounded-full mb-6">
                 <Wallet className="w-10 h-10 text-blue-600" />
               </div>
 
-              {/* Mensagem principal */}
               <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-3">
                 Nenhuma despesa lançada ainda
               </h2>
@@ -563,7 +645,6 @@ export default function DashboardObraPage() {
                 Comece registrando sua primeira despesa para acompanhar os gastos da obra em tempo real.
               </p>
 
-              {/* CTA Principal */}
               <Button 
                 size="lg"
                 className="bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-lg hover:shadow-xl transition-all px-8 py-6 text-lg"
@@ -580,7 +661,6 @@ export default function DashboardObraPage() {
           </Card>
         )}
 
-        {/* Seção de Alertas */}
         <Card className="p-6 sm:p-8 bg-white shadow-lg">
           <div className="flex items-center gap-3 mb-6">
             <div className="w-10 h-10 bg-amber-100 rounded-lg flex items-center justify-center">
@@ -588,28 +668,44 @@ export default function DashboardObraPage() {
             </div>
             <div>
               <h2 className="text-xl font-bold text-gray-900">Alertas e Notificações</h2>
-              <p className="text-sm text-gray-500">Configure avisos para orçamento e prazo</p>
+              <p className="text-sm text-gray-500">Configure avisos para orçamento, prazo e pagamentos</p>
             </div>
           </div>
 
-          {/* Alertas desativados */}
           <div className="space-y-4">
-            <Alert className="border-gray-200 bg-gray-50">
-              <BellOff className="h-4 w-4 text-gray-500" />
+            <Alert className={`border-gray-200 ${alertaOrcamentoAtivo ? "bg-green-50" : "bg-gray-50"}`}>
+              {alertaOrcamentoAtivo ? (
+                <Bell className="h-4 w-4 text-green-600" />
+              ) : (
+                <BellOff className="h-4 w-4 text-gray-500" />
+              )}
               <AlertDescription className="text-gray-600">
-                <span className="font-semibold">Alertas de orçamento:</span> Desativados
+                <span className="font-semibold">Alertas de orçamento:</span> {alertaOrcamentoAtivo ? "Ativados" : "Desativados"}
                 <p className="text-sm text-gray-500 mt-1">
-                  Receba avisos quando os gastos atingirem 80% e 100% do orçamento estimado.
+                  {alertaOrcamentoAtivo 
+                    ? "Você receberá avisos quando os gastos atingirem os percentuais configurados."
+                    : "Receba avisos quando os gastos atingirem 80% e 100% do orçamento estimado."
+                  }
                 </p>
               </AlertDescription>
             </Alert>
 
             <Alert className="border-gray-200 bg-gray-50">
-              <AlertCircle className="h-4 w-4 text-gray-500" />
+              <AlertCircle className="h-4 w-4 text-amber-600" />
               <AlertDescription className="text-gray-600">
-                <span className="font-semibold">Alertas de prazo:</span> Desativados
+                <span className="font-semibold">Alertas de prazo:</span> {alertasPrazoCount} {alertasPrazoCount === 1 ? "alerta configurado" : "alertas configurados"}
                 <p className="text-sm text-gray-500 mt-1">
                   Configure datas importantes e receba lembretes para manter sua obra no cronograma.
+                </p>
+              </AlertDescription>
+            </Alert>
+
+            <Alert className="border-gray-200 bg-gray-50">
+              <Wallet className="h-4 w-4 text-blue-600" />
+              <AlertDescription className="text-gray-600">
+                <span className="font-semibold">Alertas de pagamento:</span> {alertasPagamentoCount} {alertasPagamentoCount === 1 ? "alerta configurado" : "alertas configurados"}
+                <p className="text-sm text-gray-500 mt-1">
+                  Crie lembretes de pagamentos recorrentes ou únicos para não perder prazos.
                 </p>
               </AlertDescription>
             </Alert>
@@ -619,10 +715,7 @@ export default function DashboardObraPage() {
             <Button 
               variant="outline" 
               className="w-full sm:w-auto border-blue-600 text-blue-600 hover:bg-blue-50"
-              onClick={() => {
-                // Futura configuração de alertas
-                alert("Em breve: Configuração de alertas")
-              }}
+              onClick={() => router.push("/dashboard/alertas")}
             >
               <Bell className="w-4 h-4 mr-2" />
               Configurar alertas
@@ -630,6 +723,13 @@ export default function DashboardObraPage() {
           </div>
         </Card>
       </div>
+
+      {/* Painel de notificações */}
+      <NotificationPanel 
+        obraId={obra.id}
+        isOpen={notificationPanelOpen}
+        onClose={() => setNotificationPanelOpen(false)}
+      />
     </div>
   )
 }

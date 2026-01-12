@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { ArrowLeft } from "lucide-react"
+import { ArrowLeft, Eye, Pencil, Trash2 } from "lucide-react"
 import { goToObraDashboard } from "@/lib/navigation"
+import { toast } from "sonner"
+import { deleteDespesa } from "@/lib/storage"
 
 interface Despesa {
   id: string
@@ -42,6 +44,9 @@ export default function DespesasPage() {
   const [profissionais, setProfissionais] = useState<Profissional[]>([])
   const [obra, setObra] = useState<Obra | null>(null)
   const [loading, setLoading] = useState(true)
+  const [excluindo, setExcluindo] = useState<string | null>(null)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [despesaToDelete, setDespesaToDelete] = useState<Despesa | null>(null)
 
   useEffect(() => {
     const isAuthenticated = localStorage.getItem("isAuthenticated")
@@ -57,7 +62,7 @@ export default function DespesasPage() {
     }
     const user = JSON.parse(userData)
 
-    // Carregar obra atual (assumindo a primeira ou última, ajustar conforme projeto)
+    // Carregar obra atual
     const obrasExistentes = JSON.parse(localStorage.getItem("obras") || "[]")
     const obraEncontrada = obrasExistentes.find((o: Obra) => o.userId === user.email)
     if (!obraEncontrada) {
@@ -71,17 +76,55 @@ export default function DespesasPage() {
     const profsDaObra = todosProfissionais.filter((p: Profissional) => p.obraId === obraEncontrada.id)
     setProfissionais(profsDaObra)
 
-    // Carregar TODAS as despesas da obra (sem limite)
+    // Carregar TODAS as despesas da obra
     const todasDespesas = JSON.parse(localStorage.getItem("despesas") || "[]")
     const despesasDaObra = todasDespesas.filter((d: Despesa) => d.obraId === obraEncontrada.id)
     
-    console.log("Total de despesas carregadas:", despesasDaObra.length)
-    console.log("Despesas:", despesasDaObra)
-    
     setDespesas(despesasDaObra)
-
     setLoading(false)
   }, [router])
+
+  const handleOpenDeleteModal = (e: React.MouseEvent, despesa: Despesa) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDespesaToDelete(despesa)
+    setShowDeleteModal(true)
+  }
+
+  const handleCloseDeleteModal = () => {
+    setShowDeleteModal(false)
+    setDespesaToDelete(null)
+  }
+
+  const handleConfirmDelete = async () => {
+    if (!despesaToDelete) return
+
+    setExcluindo(despesaToDelete.id)
+
+    try {
+      const sucesso = deleteDespesa(obra?.id || "", despesaToDelete.id)
+      
+      if (sucesso) {
+        setDespesas(prev => prev.filter(d => d.id !== despesaToDelete.id))
+        handleCloseDeleteModal()
+        toast.success("Despesa excluída com sucesso!")
+      } else {
+        toast.error("Erro ao excluir despesa. Tente novamente.")
+      }
+    } catch (error) {
+      console.error("Erro ao excluir despesa:", error)
+      toast.error("Erro ao excluir despesa. Tente novamente.")
+    } finally {
+      setExcluindo(null)
+    }
+  }
+
+  const formatarMoeda = (valor: number): string => {
+    return valor.toLocaleString("pt-BR", {
+      style: "currency",
+      currency: "BRL"
+    })
+  }
 
   if (loading || !obra) {
     return (
@@ -216,6 +259,7 @@ export default function DespesasPage() {
                     <th className="text-left py-2">Descrição</th>
                     <th className="text-left py-2">Valor</th>
                     <th className="text-left py-2">Profissional</th>
+                    <th className="text-left py-2">Ações</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -239,6 +283,33 @@ export default function DespesasPage() {
                         <td className="py-3">{despesa.descricao || '-'}</td>
                         <td className="py-3 font-semibold">R$ {despesa.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         <td className="py-3">{profissional?.nome || '-'}</td>
+                        <td className="py-3">
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => router.push(`/dashboard/despesas/${despesa.id}`)}
+                              className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                              title="Visualizar detalhes"
+                            >
+                              <Eye className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => router.push(`/dashboard/despesas/${despesa.id}/editar`)}
+                              className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-all"
+                              title="Editar"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleOpenDeleteModal(e, despesa)}
+                              disabled={excluindo === despesa.id}
+                              className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Excluir"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
                       </tr>
                     )
                   })}
@@ -248,6 +319,72 @@ export default function DespesasPage() {
           )}
         </div>
       </div>
+
+      {/* Modal de confirmação de exclusão */}
+      {showDeleteModal && despesaToDelete && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-in zoom-in-95 duration-200">
+            {/* Ícone de alerta */}
+            <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="w-6 h-6 text-red-600" />
+            </div>
+
+            {/* Título */}
+            <h2 className="text-2xl font-bold text-gray-900 text-center mb-2">
+              Excluir despesa?
+            </h2>
+
+            {/* Detalhes da despesa */}
+            <div className="bg-gray-50 rounded-lg p-4 mb-4">
+              <p className="text-sm text-gray-600 mb-1">Descrição:</p>
+              <p className="font-semibold text-gray-900 mb-3">{despesaToDelete.descricao || "Sem descrição"}</p>
+              
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-xs text-gray-500">Valor</p>
+                  <p className="font-semibold text-gray-900">{formatarMoeda(despesaToDelete.valor)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Data</p>
+                  <p className="font-semibold text-gray-900">
+                    {new Date(despesaToDelete.data).toLocaleDateString('pt-BR')}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Texto de aviso */}
+            <p className="text-gray-600 text-center mb-6">
+              Esta ação é permanente e não pode ser desfeita.
+            </p>
+
+            {/* Botões */}
+            <div className="flex gap-3">
+              <button
+                onClick={handleCloseDeleteModal}
+                className="flex-1 px-4 py-3 border border-gray-300 rounded-lg font-medium text-gray-700 hover:bg-gray-50 transition-all"
+                disabled={excluindo !== null}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                className="flex-1 px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={excluindo !== null}
+              >
+                {excluindo ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white inline-block mr-2"></div>
+                    Excluindo...
+                  </>
+                ) : (
+                  "Excluir"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -8,7 +8,7 @@ import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import Image from "next/image"
 import { toast } from "sonner"
-import { goToObraDashboard } from "@/lib/navigation"
+import { getPagamentosByProfissional, getActiveObraId } from "@/lib/storage"
 
 interface Profissional {
   id: string
@@ -25,6 +25,7 @@ interface Profissional {
     valorTotalPrevisto: number
     dataInicio?: string
     dataTermino?: string
+    valorPrevisto?: number
   }
   pagamentos?: Array<{
     id: string
@@ -60,6 +61,37 @@ export default function ProfissionaisPage() {
   const [profissionais, setProfissionais] = useState<Profissional[]>([])
   const [obra, setObra] = useState<Obra | null>(null)
   const [loading, setLoading] = useState(true)
+  const [excluindo, setExcluindo] = useState<string | null>(null)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [profissionalToDelete, setProfissionalToDelete] = useState<Profissional | null>(null)
+
+  const carregarProfissionais = () => {
+    const userData = localStorage.getItem("user")
+    if (!userData) return []
+
+    // USAR activeObraId
+    const activeObraId = getActiveObraId()
+    if (!activeObraId) {
+      router.push("/obras")
+      return []
+    }
+
+    const obrasExistentes = JSON.parse(localStorage.getItem("obras") || "[]")
+    const obraAtiva = obrasExistentes.find((o: any) => o.id === activeObraId)
+    
+    if (!obraAtiva) {
+      router.push("/obras")
+      return []
+    }
+
+    setObra(obraAtiva)
+
+    // Carregar profissionais da obra ativa
+    const todosProfissionais = JSON.parse(localStorage.getItem("profissionais") || "[]")
+    const profissionaisObra = todosProfissionais.filter((p: Profissional) => p.obraId === activeObraId)
+    
+    return profissionaisObra
+  }
 
   useEffect(() => {
     // Verificar autenticação
@@ -69,29 +101,49 @@ export default function ProfissionaisPage() {
       return
     }
 
-    // Carregar obra atual
-    const userData = localStorage.getItem("user")
-    if (!userData) {
-      router.push("/")
-      return
-    }
-
-    const user = JSON.parse(userData)
-    const obrasExistentes = JSON.parse(localStorage.getItem("obras") || "[]")
-    const obrasDoUsuario = obrasExistentes.filter((o: any) => o.userId === user.email)
-    
-    if (obrasDoUsuario.length > 0) {
-      const obraMaisRecente = obrasDoUsuario[obrasDoUsuario.length - 1]
-      setObra(obraMaisRecente)
-
-      // Carregar profissionais da obra
-      const todosProfissionais = JSON.parse(localStorage.getItem("profissionais") || "[]")
-      const profissionaisObra = todosProfissionais.filter((p: Profissional) => p.obraId === obraMaisRecente.id)
-      setProfissionais(profissionaisObra)
-    }
-
+    const profissionaisCarregados = carregarProfissionais()
+    setProfissionais(profissionaisCarregados)
     setLoading(false)
   }, [router])
+
+  // Recarregar profissionais quando a página receber foco (volta de outra página)
+  useEffect(() => {
+    const handleFocus = () => {
+      const profissionaisAtualizados = carregarProfissionais()
+      setProfissionais(profissionaisAtualizados)
+    }
+
+    // Listener para mudanças no localStorage (quando pagamento é salvo em outra aba/página)
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === "despesas") {
+        const profissionaisAtualizados = carregarProfissionais()
+        setProfissionais(profissionaisAtualizados)
+      }
+    }
+
+    // Listener para eventos customizados de pagamento
+    const handlePagamentoSalvo = () => {
+      const profissionaisAtualizados = carregarProfissionais()
+      setProfissionais(profissionaisAtualizados)
+    }
+
+    const handlePagamentoAtualizado = () => {
+      const profissionaisAtualizados = carregarProfissionais()
+      setProfissionais(profissionaisAtualizados)
+    }
+
+    window.addEventListener("focus", handleFocus)
+    window.addEventListener("storage", handleStorageChange)
+    window.addEventListener("pagamentoSalvo", handlePagamentoSalvo as EventListener)
+    window.addEventListener("pagamentoAtualizado", handlePagamentoAtualizado as EventListener)
+    
+    return () => {
+      window.removeEventListener("focus", handleFocus)
+      window.removeEventListener("storage", handleStorageChange)
+      window.removeEventListener("pagamentoSalvo", handlePagamentoSalvo as EventListener)
+      window.removeEventListener("pagamentoAtualizado", handlePagamentoAtualizado as EventListener)
+    }
+  }, [])
 
   const formatarMoeda = (valor: number): string => {
     return valor.toLocaleString("pt-BR", {
@@ -100,22 +152,15 @@ export default function ProfissionaisPage() {
     })
   }
 
-  const calcularTotalPagoViaDespesas = (profissional: Profissional): number => {
-    if (!profissional.despesas) return 0
-    return profissional.despesas
-      .filter(d => String(d.category ?? "").toLowerCase() === "mao_obra")
-      .reduce((acc, d) => acc + d.valor, 0)
-  }
-
   const calcularValorPago = (profissional: Profissional): number => {
-    const pagamentos = profissional.pagamentos?.reduce((acc, p) => acc + p.valor, 0) || 0
-    const despesas = calcularTotalPagoViaDespesas(profissional)
-    return pagamentos + despesas
+    // Buscar pagamentos diretamente do storage (fonte única de verdade)
+    const pagamentos = getPagamentosByProfissional(profissional.obraId, profissional.id)
+    return pagamentos.reduce((acc, p) => acc + p.valor, 0)
   }
 
   const calcularValorPrevisto = (profissional: Profissional): number => {
     // Priorizar valorPrevisto direto do profissional, depois do contrato
-    return profissional.valorPrevisto || profissional.contrato?.valorTotalPrevisto || 0
+    return profissional.valorPrevisto || profissional.contrato?.valorPrevisto || profissional.contrato?.valorTotalPrevisto || 0
   }
 
   const calcularSaldoPagar = (profissional: Profissional): number => {
@@ -129,14 +174,39 @@ export default function ProfissionaisPage() {
     return saldo < 0 ? "text-red-600" : "text-blue-600"
   }
 
-  const handleExcluir = (id: string) => {
-    if (confirm("Tem certeza que deseja excluir este profissional?")) {
+  const handleOpenDeleteModal = (e: React.MouseEvent, profissional: Profissional) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setProfissionalToDelete(profissional)
+    setShowDeleteModal(true)
+  }
+
+  const handleCloseDeleteModal = () => {
+    setShowDeleteModal(false)
+    setProfissionalToDelete(null)
+  }
+
+  const handleConfirmDelete = async () => {
+    if (!profissionalToDelete) return
+
+    setExcluindo(profissionalToDelete.id)
+
+    try {
+      // Remover do localStorage
       const todosProfissionais = JSON.parse(localStorage.getItem("profissionais") || "[]")
-      const novosProfissionais = todosProfissionais.filter((p: Profissional) => p.id !== id)
+      const novosProfissionais = todosProfissionais.filter((p: Profissional) => p.id !== profissionalToDelete.id)
       localStorage.setItem("profissionais", JSON.stringify(novosProfissionais))
       
-      setProfissionais(profissionais.filter(p => p.id !== id))
+      // Atualizar estado local
+      setProfissionais(profissionais.filter(p => p.id !== profissionalToDelete.id))
+      
+      handleCloseDeleteModal()
       toast.success("Profissional excluído com sucesso!")
+    } catch (error) {
+      console.error("Erro ao excluir profissional:", error)
+      toast.error("Erro ao excluir profissional. Tente novamente.")
+    } finally {
+      setExcluindo(null)
     }
   }
 
@@ -170,7 +240,7 @@ export default function ProfissionaisPage() {
         <div className="mb-8">
           <Button
             variant="ghost"
-            onClick={() => goToObraDashboard(router, obra?.id)}
+            onClick={() => router.push("/dashboard/obra")}
             className="mb-4 hover:bg-blue-50 text-gray-700"
           >
             <ArrowLeft className="w-4 h-4 mr-2" />
@@ -296,8 +366,10 @@ export default function ProfissionaisPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => handleExcluir(profissional.id)}
-                        className="border-red-600 text-red-600 hover:bg-red-50 flex-1 sm:flex-none"
+                        type="button"
+                        onClick={(e) => handleOpenDeleteModal(e, profissional)}
+                        disabled={excluindo === profissional.id}
+                        className="border-red-600 text-red-600 hover:bg-red-50 flex-1 sm:flex-none disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <Trash2 className="w-4 h-4 mr-2" />
                         Excluir
@@ -310,6 +382,76 @@ export default function ProfissionaisPage() {
           </div>
         )}
       </div>
+
+      {/* Modal de confirmação de exclusão */}
+      {showDeleteModal && profissionalToDelete && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-in zoom-in-95 duration-200">
+            {/* Ícone de alerta */}
+            <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="w-6 h-6 text-red-600" />
+            </div>
+
+            {/* Título */}
+            <h2 className="text-2xl font-bold text-gray-900 text-center mb-2">
+              Excluir profissional?
+            </h2>
+
+            {/* Nome do profissional */}
+            <p className="text-center text-gray-600 font-medium mb-4">
+              {profissionalToDelete.nome}
+            </p>
+
+            {/* Detalhes */}
+            <div className="bg-gray-50 rounded-lg p-4 mb-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-xs text-gray-500">Função</p>
+                  <p className="font-semibold text-gray-900">{profissionalToDelete.funcao}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Valor Previsto</p>
+                  <p className="font-semibold text-gray-900">
+                    {calcularValorPrevisto(profissionalToDelete) > 0 
+                      ? formatarMoeda(calcularValorPrevisto(profissionalToDelete))
+                      : "Não definido"}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Texto de aviso */}
+            <p className="text-gray-600 text-center mb-6">
+              Esta ação é permanente e não pode ser desfeita.
+            </p>
+
+            {/* Botões */}
+            <div className="flex gap-3">
+              <button
+                onClick={handleCloseDeleteModal}
+                className="flex-1 px-4 py-3 border border-gray-300 rounded-lg font-medium text-gray-700 hover:bg-gray-50 transition-all"
+                disabled={excluindo !== null}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                className="flex-1 px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={excluindo !== null}
+              >
+                {excluindo ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white inline-block mr-2"></div>
+                    Excluindo...
+                  </>
+                ) : (
+                  "Excluir"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

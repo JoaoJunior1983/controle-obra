@@ -39,16 +39,8 @@ export default function DashboardPage() {
   }
 
   const handleAcessarObras = () => {
-    // Se existir apenas uma obra, redirecionar direto para o dashboard
-    if (obras.length === 1) {
-      router.push("/dashboard/obra")
-    } else if (obras.length > 1) {
-      // Se existir mais de uma obra, manter comportamento atual (não implementar listagem agora)
-      router.push("/dashboard/obra")
-    } else {
-      // Se não houver obras, redirecionar para criar obra
-      router.push("/dashboard/criar-obra")
-    }
+    // Sempre navegar para /obras (a página /obras gerencia a lógica de redirecionamento)
+    router.push("/obras")
   }
 
   return (

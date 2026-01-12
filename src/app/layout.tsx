@@ -6,6 +6,7 @@ import "./globals.css";
 // Import all available fonts for AI usage
 import "../lib/fonts";
 import { Toaster } from "sonner";
+import AuthenticatedLayout from "@/components/AuthenticatedLayout";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -35,7 +36,9 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        <AuthenticatedLayout>
+          {children}
+        </AuthenticatedLayout>
         <Toaster position="top-right" richColors />
       </body>
     </html>
